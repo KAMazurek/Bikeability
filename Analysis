@@ -1,0 +1,231 @@
+import pandas as pd
+import numpy as np
+import sklearn as sk
+from sklearn.linear_model import LinearRegression
+import matplotlib.pyplot as plt
+import plotly.express as px
+import plotly.graph_objects as go
+import seaborn as sns
+
+pd.set_option("display.max_rows", None, "display.max_columns", None)
+
+######################################################################################################################################################################################################
+############################################# CALIBRATION ###################################################################################################################################
+######################################################################################################################################################################################################
+
+df = pd.read_csv('/home/karolina/SpacialDataScience/CaseStudyZuid/xxxxxxxxx/validationSet.csv')
+df.drop(df.columns[[-1, ]], axis=1, inplace=True)
+
+# Based on postcodes:
+df['120'] = df['VertPC'].isin([1076, 1081, 1082, 1083])
+df['16'] = df['VertPC'].isin([1077, 1071, 1074])
+df['18'] = df['VertPC'] == 1075
+df['106'] = df['VertPC'].isin([1072, 1073])
+df['237'] = df['VertPC'].isin([1078, 1079])
+
+#Oservations in selected areas only:
+
+df_catch = df[(df.iloc[:, -5:].isin([True])).any(axis=1)]
+
+df_catch['areaId'] = np.where(df_catch['120'].isin([True]), '120',
+                              np.where(df_catch['16'].isin([True]), '16',
+                                       np.where(df_catch['18'].isin([True]), '18',
+                                                np.where(df_catch['106'].isin([True]), '106',
+                                                         np.where(df_catch['237'].isin([True]), '237', "null")))))
+
+# only people cycling today are considered as those who have a habit of cycling
+df_catch['FqNEFiets'].replace([2, 3, 4, 5], 0, inplace=True)
+
+## Regression for children (all variables considered) could not be conducted because in the selected areas in total only 27 children 6-13 yo participated and non of them cycles on daily basis. Bigger sample is needed.
+# # Only children up to 13 yo:
+# df_catch = df_catch.loc[df_catch['Leeftijd'].between(0, 13)]
+# print(df_catch['FqNEFiets'].count())
+
+
+# percentage of people in the area who cycle everyday:
+meanHabit = [df_catch.groupby(by='areaId')['FqNEFiets'].sum() / df_catch.groupby(by='areaId')['areaId'].count()]
+dfNew = pd.DataFrame(meanHabit).T
+
+dfNew.reset_index(inplace=True)
+dfNew.columns = ['areaId', 'meanHabit']
+
+# Index dataframe
+dfInd = pd.read_csv('/home/karolina/SpacialDataScience/CaseStudyZuid/index.csv')
+dfInd.drop(dfInd.columns[[-1, ]], axis=1, inplace=True)
+dfNew = dfNew.apply(pd.to_numeric)
+
+# Merge of both datasets:
+dfInd = dfInd.merge(dfNew, left_on='id', right_on='areaId')
+print(dfInd)
+
+# Distance and parking cannot be taken into account because we've got not only school children in the sample.
+dfInd.drop(['areaId', 'Distance', 'Parking Infrastructure'], axis=1, inplace=True)
+
+# Normalization of the components (min-max method)
+
+##Function for min max normalization
+# for x in ['Connectivity', 'Traffic Speed']:
+#    dfInd[x] = (dfInd[x]-dfInd[x].min())/(dfInd[x].max()-dfInd[x].min())
+#    return dfInd
+#
+
+dfInd['Connectivity'] = (dfInd['Connectivity']-dfInd['Connectivity'].min())/(dfInd['Connectivity'].max()-dfInd['Connectivity'].min())
+dfInd['Traffic Speed'] = (dfInd['Traffic Speed']-dfInd['Traffic Speed'].min())/(dfInd['Traffic Speed'].max()-dfInd['Traffic Speed'].min())
+dfInd['Air pollution'] = 1 - (dfInd['Air pollution']-dfInd['Air pollution'].min())/(dfInd['Air pollution'].max()-dfInd['Air pollution'].min())
+
+print('Normalized data:', '\n', dfInd)
+# Regression:
+X = dfInd.iloc[:, 1:-1]
+Y = dfInd.iloc[:, -1:]
+
+reg = LinearRegression().fit(X, Y)
+
+# The coefficients
+print("Coefficients: \n", reg.coef_)
+
+##Function for computation of index score:
+# def indexFun(connectivity, speed, pollution):
+#     return connectivity * reg.coef_[0][0] + speed * reg.coef_[0][1] + pollution * reg.coef_[0][2]
+
+############### INDEX with coeff as weights
+dfInd['index'] = dfInd['Connectivity'] * reg.coef_[0][0] + dfInd['Traffic Speed'] * reg.coef_[0][1] + dfInd['Air pollution'] * reg.coef_[0][2]
+
+############### INDEX with all weights 1
+dfInd['indexWeight1'] = dfInd['Connectivity'] + dfInd['Traffic Speed'] + dfInd['Air pollution']
+
+print('\n', "Df with index computed:", '\n', dfInd)
+
+
+# create df: mean, sd and coefficients
+dfDesc = dfInd.iloc[:, 1:].describe()
+dfDesc = dfDesc.iloc[1:3, :-3].T
+coefReg = [reg.coef_[0][0], reg.coef_[0][1], reg.coef_[0][2]]
+dfDesc['regression coefficient'] = coefReg
+
+print(dfDesc)
+
+
+
+
+# There should be train and test set (more areas needed for that. Maybe better if done for all postcode areas in the whole city or even country.
+
+
+
+
+######################################################################################################################################################################################################
+###################################################### Sensitivity analysis ###################################################################################################################################
+######################################################################################################################################################################################################
+
+# take only id and component column to another df and transpose
+df_comp = dfInd.loc[:, 'id':'Air pollution'].T
+df_comp.columns = df_comp.iloc[0]
+df_comp = df_comp[1:]
+print(df_comp)
+
+# get row means to a list
+meansList = df_comp.mean(axis=1).tolist()
+print(meansList)
+
+# add columns with: min, halfMinus,  halfPlus, max
+df_comp['min'] = df_comp.min(axis=1)
+df_comp['halfMin'] = df_comp['min'] + ((df_comp.iloc[:, 0:-1].mean(axis=1) - df_comp['min'])/2)
+df_comp['halfMax'] = df_comp.iloc[:, 0:-2].mean(axis=1) + ((df_comp.iloc[:, 0:-2].max(axis=1) - df_comp.iloc[:, 0:-2].mean(axis=1))/2)
+df_comp['max'] = df_comp.iloc[:, 0:-3].max(axis=1)
+print(df_comp)
+
+# new df for results
+colNames = ['min', 'halfMin', 'halfMax', 'max']
+dfIndexResults = pd.DataFrame(columns=colNames)
+
+# calculation of index score for means only
+def indexFun():
+    return meansList[0] * 0.00461347 + meansList[1] * 0.0282758 + meansList[2] * 0.18836387
+
+indexMeans = indexFun()
+
+# calculation of new df with combinations of values
+for col in colNames:
+    for m in range(0, len(meansList)):
+        listCopy = list(meansList)
+        oldValue = listCopy[m]
+        meansList[m] = df_comp.iloc[m].loc[col]
+        # calculating index value with one of components alternated
+        indexModified = indexFun()
+        # appending relative values to  dataframe with columns: min, halfMin ...
+        change = indexModified / indexMeans - 1
+        if change < 0:
+            change = - change
+        dfIndexResults.loc[m, col] = change
+        meansList[m] = oldValue
+
+rowNames = ['Connectivity', 'Traffic speed', 'Air pollution']
+dfIndexResults.index = rowNames
+
+print(indexMeans)
+print(dfIndexResults)
+
+# we need to transform the data from raw data to percentage columnwise
+data_perc = dfIndexResults.divide(dfIndexResults.sum(axis=0), axis=1)
+data_perc = data_perc * 100
+print(data_perc)
+
+
+# Make the plot
+steps = ['step -1', 'step -1/2', 'step 1/2', 'step 1']
+
+plt.stackplot(steps, data_perc.loc["Connectivity"].tolist(),
+              data_perc.loc["Traffic speed"].tolist(),
+              data_perc.loc["Air pollution"].tolist(),
+              labels=rowNames)
+
+
+plt.legend(bbox_to_anchor=(0., 1.02, 1., .102), loc=3, ncol=3, mode="expand", borderaxespad=0.)
+plt.margins(0, 0)
+plt.title('Sensitivity at 4 different distances' + '\n' + 'from the average index score', fontsize=18, y=1.2)
+plt.ylabel('Contribution to index score change [%]', fontsize=14)
+plt.xlabel('Distance from mean component value', fontsize=14)
+plt.show()
+
+
+######################################################################################################################################################################################################
+############################################# PLOTS FOR PARTICULAR CATCHMENT AREAS ###################################################################################################################################
+######################################################################################################################################################################################################
+dfComp = dfInd.iloc[:, :-3].T
+ids = dfComp.iloc[0]
+dfComp = dfComp[1:]
+dfComp.columns = ids
+
+
+schoolId = ['School 106', 'School 16', 'School 18', 'School 120', 'School 237']
+
+categories = ["Connectivity", "Traffic Speed", "Air Quality"]
+
+
+#for col in dfComp:
+for col, sId in zip(dfComp, schoolId):
+    fig = go.Figure()
+
+    col = dfComp[col].values.tolist()
+    fig.add_trace(go.Scatterpolar(
+        r=col,
+        theta=categories,
+        fill='toself',
+        name=sId
+    ))
+
+    fig.add_trace(go.Scatterpolar(
+        r=meansList,
+        theta=categories,
+        fill='toself',
+        name='Mean component values'
+    ))
+
+    fig.update_layout(
+        polar=dict(
+            radialaxis=dict(
+                visible=True,
+                range=[0, 1]
+            ))
+    )
+    fig.show()
+
