@@ -6,14 +6,16 @@ import matplotlib.pyplot as plt
 import plotly.express as px
 import plotly.graph_objects as go
 import seaborn as sns
+import statsmodels.api as sm
+from plotly.subplots import make_subplots
 
 pd.set_option("display.max_rows", None, "display.max_columns", None)
 
 ######################################################################################################################################################################################################
-############################################# CALIBRATION ###################################################################################################################################
+############################################# VALIDATION ###################################################################################################################################
 ######################################################################################################################################################################################################
 
-df = pd.read_csv('/home/karolina/SpacialDataScience/CaseStudyZuid/xxxxxxxxx/validationSet.csv')
+df = pd.read_csv('path/validationSet.csv')
 df.drop(df.columns[[-1, ]], axis=1, inplace=True)
 
 # Based on postcodes:
@@ -37,6 +39,7 @@ df_catch['areaId'] = np.where(df_catch['120'].isin([True]), '120',
 df_catch['FqNEFiets'].replace([2, 3, 4, 5], 0, inplace=True)
 
 ## Regression for children (all variables considered) could not be conducted because in the selected areas in total only 27 children 6-13 yo participated and non of them cycles on daily basis. Bigger sample is needed.
+
 # # Only children up to 13 yo:
 # df_catch = df_catch.loc[df_catch['Leeftijd'].between(0, 13)]
 # print(df_catch['FqNEFiets'].count())
@@ -50,51 +53,81 @@ dfNew.reset_index(inplace=True)
 dfNew.columns = ['areaId', 'meanHabit']
 
 # Index dataframe
-dfInd = pd.read_csv('/home/karolina/SpacialDataScience/CaseStudyZuid/index.csv')
+dfInd = pd.read_csv('path/index.csv')
 dfInd.drop(dfInd.columns[[-1, ]], axis=1, inplace=True)
 dfNew = dfNew.apply(pd.to_numeric)
 
 # Merge of both datasets:
 dfInd = dfInd.merge(dfNew, left_on='id', right_on='areaId')
-print(dfInd)
+print('Before norm:\n', dfInd)
+dfInd.to_csv('beforeNorm.csv')
+
+
+# Boxplots
+# Inspired by: https://stackoverflow.com/questions/62901783/how-to-plot-boxplots-of-multiple-columns-with-different-ranges
+
+variables = ['Distance', 'Network Density', 'Traffic Speed', 'Parking Infrastructure', 'Air Pollution']
+fig = make_subplots(rows=1, cols=len(variables))
+
+for i, var in enumerate(variables):
+    fig.add_trace(
+        go.Box(y=dfInd[var],
+        name=var),
+        row=1, col=i+1
+    )
+
+fig.update_traces(boxpoints='all', jitter=.3)
+
+fig.show()
+
+
+
 
 # Distance and parking cannot be taken into account because we've got not only school children in the sample.
 dfInd.drop(['areaId', 'Distance', 'Parking Infrastructure'], axis=1, inplace=True)
 
 # Normalization of the components (min-max method)
 
-##Function for min max normalization
-# for x in ['Connectivity', 'Traffic Speed']:
-#    dfInd[x] = (dfInd[x]-dfInd[x].min())/(dfInd[x].max()-dfInd[x].min())
-#    return dfInd
-#
+## min max normalization
+for x in ['Network Density', 'Traffic Speed']:
+    dfInd[x] = (dfInd[x]-dfInd[x].min())/(dfInd[x].max()-dfInd[x].min())
 
-dfInd['Connectivity'] = (dfInd['Connectivity']-dfInd['Connectivity'].min())/(dfInd['Connectivity'].max()-dfInd['Connectivity'].min())
-dfInd['Traffic Speed'] = (dfInd['Traffic Speed']-dfInd['Traffic Speed'].min())/(dfInd['Traffic Speed'].max()-dfInd['Traffic Speed'].min())
-dfInd['Air pollution'] = 1 - (dfInd['Air pollution']-dfInd['Air pollution'].min())/(dfInd['Air pollution'].max()-dfInd['Air pollution'].min())
+dfInd['Air Pollution'] = 1 - (dfInd['Air Pollution']-dfInd['Air Pollution'].min())/(dfInd['Air Pollution'].max()-dfInd['Air Pollution'].min())
 
 print('Normalized data:', '\n', dfInd)
-# Regression:
+
+# Regression (sklearn):
 X = dfInd.iloc[:, 1:-1]
 Y = dfInd.iloc[:, -1:]
 
 reg = LinearRegression().fit(X, Y)
 
 # The coefficients
-print("Coefficients: \n", reg.coef_)
+print("Coefficients: \n", reg.coef_, "Intercept: \n", reg.intercept_)
+
+# Regression (statsmodels):
+X2 = sm.add_constant(X)
+est = sm.OLS(Y, X2)
+est2 = est.fit()
+print(est2.summary())
+
 
 ##Function for computation of index score:
 # def indexFun(connectivity, speed, pollution):
 #     return connectivity * reg.coef_[0][0] + speed * reg.coef_[0][1] + pollution * reg.coef_[0][2]
 
 ############### INDEX with coeff as weights
-dfInd['index'] = dfInd['Connectivity'] * reg.coef_[0][0] + dfInd['Traffic Speed'] * reg.coef_[0][1] + dfInd['Air pollution'] * reg.coef_[0][2]
+dfInd['index'] = (dfInd['Network Density'] * reg.coef_[0][0] + dfInd['Traffic Speed'] * reg.coef_[0][1] + dfInd['Air Pollution'] * reg.coef_[0][2]) #+ reg.intercept_
 
 ############### INDEX with all weights 1
-dfInd['indexWeight1'] = dfInd['Connectivity'] + dfInd['Traffic Speed'] + dfInd['Air pollution']
+dfInd['indexWeight1'] = dfInd['Network Density'] + dfInd['Traffic Speed'] + dfInd['Air Pollution']
 
 print('\n', "Df with index computed:", '\n', dfInd)
 
+dfInd.to_csv('indexScores.csv')
+
+# Correlation habits and index with equal weights:
+print('Corr:', '\n', np.corrcoef(dfInd['meanHabit'], dfInd['indexWeight1']))
 
 # create df: mean, sd and coefficients
 dfDesc = dfInd.iloc[:, 1:].describe()
@@ -103,7 +136,7 @@ coefReg = [reg.coef_[0][0], reg.coef_[0][1], reg.coef_[0][2]]
 dfDesc['regression coefficient'] = coefReg
 
 print(dfDesc)
-
+print('\n', reg.coef_, '\n')
 
 
 
@@ -116,8 +149,12 @@ print(dfDesc)
 ###################################################### Sensitivity analysis ###################################################################################################################################
 ######################################################################################################################################################################################################
 
+# Inspiration from:
+# https://towardsdatascience.com/the-sensitivity-analysis-a-powerful-yet-underused-tool-for-data-scientists-e553fa695976
+# After all, unsuccessful in this case.
+
 # take only id and component column to another df and transpose
-df_comp = dfInd.loc[:, 'id':'Air pollution'].T
+df_comp = dfInd.loc[:, 'id':'Air Pollution'].T
 df_comp.columns = df_comp.iloc[0]
 df_comp = df_comp[1:]
 print(df_comp)
@@ -139,7 +176,7 @@ dfIndexResults = pd.DataFrame(columns=colNames)
 
 # calculation of index score for means only
 def indexFun():
-    return meansList[0] * 0.00461347 + meansList[1] * 0.0282758 + meansList[2] * 0.18836387
+    return (meansList[0] * 0.00461347 + meansList[1] * 0.0282758 + meansList[2] * 0.18836387) + reg.intercept_
 
 indexMeans = indexFun()
 
@@ -158,7 +195,7 @@ for col in colNames:
         dfIndexResults.loc[m, col] = change
         meansList[m] = oldValue
 
-rowNames = ['Connectivity', 'Traffic speed', 'Air pollution']
+rowNames = ['Network Density', 'Traffic speed', 'Air Pollution']
 dfIndexResults.index = rowNames
 
 print(indexMeans)
@@ -173,9 +210,9 @@ print(data_perc)
 # Make the plot
 steps = ['step -1', 'step -1/2', 'step 1/2', 'step 1']
 
-plt.stackplot(steps, data_perc.loc["Connectivity"].tolist(),
+plt.stackplot(steps, data_perc.loc["Network Density"].tolist(),
               data_perc.loc["Traffic speed"].tolist(),
-              data_perc.loc["Air pollution"].tolist(),
+              data_perc.loc["Air Pollution"].tolist(),
               labels=rowNames)
 
 
@@ -184,11 +221,11 @@ plt.margins(0, 0)
 plt.title('Sensitivity at 4 different distances' + '\n' + 'from the average index score', fontsize=18, y=1.2)
 plt.ylabel('Contribution to index score change [%]', fontsize=14)
 plt.xlabel('Distance from mean component value', fontsize=14)
-plt.show()
+#plt.show()
 
 
 ######################################################################################################################################################################################################
-############################################# PLOTS FOR PARTICULAR CATCHMENT AREAS ###################################################################################################################################
+############################################# RADAR PLOTS FOR PARTICULAR CATCHMENT AREAS ###################################################################################################################################
 ######################################################################################################################################################################################################
 dfComp = dfInd.iloc[:, :-3].T
 ids = dfComp.iloc[0]
@@ -198,7 +235,7 @@ dfComp.columns = ids
 
 schoolId = ['School 106', 'School 16', 'School 18', 'School 120', 'School 237']
 
-categories = ["Connectivity", "Traffic Speed", "Air Quality"]
+categories = ["Network density", "Traffic Speed", "Air Quality"]
 
 
 #for col in dfComp:
@@ -225,7 +262,14 @@ for col, sId in zip(dfComp, schoolId):
             radialaxis=dict(
                 visible=True,
                 range=[0, 1]
-            ))
+            )),
+        font=dict(
+            family="Liberation Sans",
+            size=18,
+            color="black"
+        )
+
     )
     fig.show()
+
 
